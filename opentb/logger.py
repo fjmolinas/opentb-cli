@@ -1,29 +1,34 @@
 #! /usr/bin/env python3
 
 """
-Helper script to log opentestbed mqtt data
+Helper script to log opentestbed mqtt data to file.
 
-usage: logger.py [-h] [--broker BROKER] [--logfile LOGFILE]
-                 [--loglevel {debug,info,warning,error,fatal,critical}] [--runtime RUNTIME]
-                 [log_directory]
+usage: python logger.py [-h] [--broker BROKER] [--data-topic DATA_TOPIC] [--name NAME]
+                        [--loglevel {debug,info,warning,error,fatal,critical}] [--runtime RUNTIME] [--timestamp TIMESTAMP]
+                        [directory]
 
 positional arguments:
-  log_directory         Logs directory
+  directory             Logs directory
 
 optional arguments:
   -h, --help            show this help message and exit
   --broker BROKER, --b BROKER
                         MQTT broker address
-  --logfile LOGFILE, --lf LOGFILE
+  --data-topic DATA_TOPIC
+                        Default topic to subscribe for data
+  --name NAME, --lf NAME
                         Log file base name
   --loglevel {debug,info,warning,error,fatal,critical}
                         Python logger log level
-  --runtime RUNTIME, --t RUNTIME
+  --runtime RUNTIME, --e RUNTIME
                         Logging Time in seconds, 0 means until interrupted
+  --timestamp TIMESTAMP, --t TIMESTAMP
+                        Timestamp to append to log file name, if not provided creation time is used
 
 example:
 
-    ....
+    python logger.py testlogs
+    python logger.py testlogs --runtime 60 --name dummyname
 """
 
 import argparse
@@ -47,44 +52,61 @@ LOG_LEVELS = ('debug', 'info', 'warning', 'error', 'fatal', 'critical')
 
 USAGE_EXAMPLE = '''example:
 
-    ....
+    python logger.py testlogs
+    python logger.py testlogs --runtime 60 --name dummyname
 '''
 
 PARSER = argparse.ArgumentParser(
     formatter_class=argparse.RawDescriptionHelpFormatter, epilog=USAGE_EXAMPLE)
-PARSER.add_argument('log_directory', nargs='?', default='logs',
+PARSER.add_argument('directory', nargs='?', default='logs',
                     help='Logs directory')
 PARSER.add_argument('--broker', '--b', default=DEFAULT_BROKER,
                     help='MQTT broker address')
-PARSER.add_argument( '--logfile', '--lf', default=LOGFILE_NAME ,
+PARSER.add_argument('--data-topic', default=UDP_INJECT_TOPIC,
+                    help='Default topic to subscribe for data')
+PARSER.add_argument( '--name', '--lf', default=LOGFILE_NAME ,
                     help='Log file base name')
 PARSER.add_argument('--loglevel', choices=LOG_LEVELS, default='info',
                     help='Python logger log level')
-PARSER.add_argument( '--runtime', '--t', type=float, default=0,
+PARSER.add_argument( '--runtime', '--e', type=float, default=0,
                     help='Logging Time in seconds, 0 means until interrupted')
+PARSER.add_argument( '--timestamp', '--t', type=float, default=None,
+                    help='Timestamp to append to log file name, '
+                    'if not provided creation time is used')
 
 
-filepath = ''
+class MqttDataLogger(object):
+
+    def __init__(self, broker, topic, outfile):
+
+        self.brokey = broker
+        self.outfile = outfile
+        self.topic = topic
+
+        # Connect to broker and start loop
+        self.client = mqttClient.Client()
+        self.client.on_connect = self._on_connect
+        self.client.on_message = self._on_message
+        self.client.connect(broker)
+        self.client.loop_start()
+
+    def _on_connect(self, client, userdata, flags, rc):
+        log = logging.getLogger("opentb-logger")
+        if rc:
+            log.error("Connection failed")
+        else:
+            log.info("Connection succeeded")
+            client.subscribe(self.topic)
+            log.info("Subscribed to {}".format(self.topic))
+
+    def _on_message(self, client, userdata, message):
+        log = logging.getLogger("opentb-logger")
+        log.info("Message received: {}".format(message.payload))
+        _log_data(message.payload, self.outfile)
 
 
-def _on_connect(client, userdata, flags, rc):
-    log = logging.getLogger("opentb-logger")
-    if rc:
-        log.error("Connection failed")
-    else:
-        log.info("Connection succeeded")
-        client.subscribe(UDP_INJECT_TOPIC)
-        log.info("Subscribed to {}".format(UDP_INJECT_TOPIC))
-
-
-def _on_message(client, userdata, message):
-    log = logging.getLogger("opentb-logger")
-    log.info("Message received: {}".format(message.payload))
-    _log_data(message.payload)
-
-
-def _log_data(data):
-    with open(filepath, 'a') as f:
+def _log_data(data, file_path):
+    with open(file_path, 'a') as f:
         log = {
             'name': EXPERIMENT_NAME,
             'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
@@ -93,7 +115,7 @@ def _log_data(data):
         f.write('{}\n'.format(json.dumps(log)))
 
 
-def _create_log_directory(directory, clean=False, mode=0o755):
+def _create_directory(directory, clean=False, mode=0o755):
     """Directory creation helper with `clean` option.
 
     :param clean: tries deleting the directory before re-creating it
@@ -106,25 +128,23 @@ def _create_log_directory(directory, clean=False, mode=0o755):
     os.makedirs(directory, mode=mode, exist_ok=True)
 
 
-def _create_log_file(directory, filename):
-    _create_log_directory(directory)
-    # decide a log file name and create it
-    timestamp = int(time.time())
-    log_file_name = '{}-{}.jsonl'.format(filename, timestamp)
+def _create_logfile(directory, name, timestamp=None):
+    if timestamp is None:
+        timestamp = int(time.time())
+    log_file_name = '{}_{}.jsonl'.format(name, timestamp)
 
     file_path = os.path.join(directory, log_file_name)
     if os.path.exists(file_path):
-        sys.exit("LogFile already exists")
+        sys.exit("Log file {} already exists".format(log_file_name))
     else:
         try:
             open(file_path, 'w').close()
         except OSError as err:
             sys.exit('Failed to create a log file: {}'.format(err))
-    global filepath
-    filepath = file_path
+    return file_path
 
 
-def _should_run(start_time, run_time):
+def _keep_running(start_time, run_time):
     if run_time == 0:
         return True
     elif start_time + run_time > time.time():
@@ -145,26 +165,33 @@ def main(args=None):
     log.addHandler(LOG_HANDLER)
     log.propagate = False
 
+    # parse arguments
+    subscribe_topic = args.data_topic
+    directory = args.directory
+    filename = args.name
+    broker = args.broker
+    runtime = args.runtime
+    timestamp = args.timestamp
+
+    # Create directory if needed
+    _create_directory(directory)
+
     # Setup log file with date
-    _create_log_file(args.log_directory, args.logfile)
+    logfile = _create_logfile(directory, filename, timestamp)
 
     # Connect to broker and start loop
-    client = mqttClient.Client("Python")
-    client.on_connect = _on_connect
-    client.on_message = _on_message
-    client.connect(args.broker)
-    client.loop_start()
+    mqtt_logger = MqttDataLogger(broker, subscribe_topic, logfile)
 
+    # Run while not interrupted or while runtime has not elapsed
     start_time = time.time()
     try:
-        # Run while not interrupted
-        while True and _should_run(start_time, args.runtime):
+        while True and _keep_running(start_time, runtime):
             time.sleep(0.1)
     except KeyboardInterrupt:
         log.info("Keyboard Interrupt, forced exit!")
     finally:
-        client.disconnect()
-        client.loop_stop()
+        mqtt_logger.client.disconnect()
+        mqtt_logger.client.loop_stop()
 
 
 if __name__ == "__main__":
