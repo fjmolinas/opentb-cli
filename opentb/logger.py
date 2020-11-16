@@ -41,8 +41,7 @@ import shutil
 import sys
 import time
 
-EXPERIMENT_NAME = 'udp_inject'
-LOGFILE_NAME = 'udp_inject'
+LOGFILE_NAME = 'opentestbed'
 DEFAULT_BROKER = 'argus.paris.inria.fr'
 UDP_INJECT_TOPIC = 'opentestbed/uinject/arrived'
 
@@ -79,15 +78,15 @@ class MqttDataLogger(object):
 
     def __init__(self, broker, topic, outfile):
 
-        self.brokey = broker
-        self.outfile = outfile
+        self.broker = broker
         self.topic = topic
+        self.outfile = outfile
 
         # Connect to broker and start loop
         self.client = mqttClient.Client()
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
-        self.client.connect(broker)
+        self.client.connect(self.broker)
         self.client.loop_start()
 
     def _on_connect(self, client, userdata, flags, rc):
@@ -107,9 +106,9 @@ class MqttDataLogger(object):
 
 def _log_data(data, file_path):
     with open(file_path, 'a') as f:
+        timestamp = datetime.datetime.now()
         log = {
-            'name': EXPERIMENT_NAME,
-            'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+            'timestamp': timestamp.strftime("%Y-%m-%d %H:%M:%S.%f"),
             'data':json.loads(data)
         }
         f.write('{}\n'.format(json.dumps(log)))
